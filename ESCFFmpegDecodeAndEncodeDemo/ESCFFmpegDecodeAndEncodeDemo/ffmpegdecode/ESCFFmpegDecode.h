@@ -7,13 +7,14 @@
 //
 
 #import <UIKit/UIKit.h>
-#import "MediaFrame.h"
 
 @class ESCFFmpegDecode;
 
 @protocol ESCFFmpegDecodeDelegate <NSObject>
 
-- (void)decoder:(ESCFFmpegDecode *)decoder didDecodeFrame:(MediaFrame *)frame ydata:(NSData *)ydata udata:(NSData *)udata vdata:(NSData *)vdata;
+- (void)decoder:(ESCFFmpegDecode *)decoder ydata:(NSData *)ydata udata:(NSData *)udata vdata:(NSData *)vdata;
+
+- (void)endDecoder;
 
 @end
 
@@ -22,15 +23,11 @@
 
 @property (nonatomic, weak) id<ESCFFmpegDecodeDelegate> delegate;
 
-- (id)initWithDelegate:(id)delegate;
+- (instancetype)initWithDelegate:(id)delegate width:(int)width height:(int)height;
 
-- (BOOL)setupDecoder;
+- (void)decodeFrameToYUV:(NSData *)frame;
 
-- (void)decodeFrameToYUV:(MediaFrame *)frame;
-
-- (void)destroy;
-
-- (UIImage *)getLastFrame;
+- (void)endH264Data;
 
 @end
 

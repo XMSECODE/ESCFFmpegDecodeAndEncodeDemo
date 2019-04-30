@@ -13,22 +13,20 @@
 
 @interface ESCFFmpegDecode (){
     AVCodec *_pCodec;
-    AVPacket _packet;
     AVCodecContext *_pCodecCtx;
 }
 
 @property(nonatomic,strong)dispatch_queue_t decoderQueue;
 
-@property(nonatomic,assign)AVFrame* lastFrame;
-
 @end
 
 @implementation ESCFFmpegDecode
 
-- (id)initWithDelegate:(id)delegate {
+- (instancetype)initWithDelegate:(id)delegate width:(int)width height:(int)height {
     if ((self = [super init])) {
         self.delegate = delegate;
         self.decoderQueue = dispatch_queue_create("decodequeue", DISPATCH_QUEUE_SERIAL);
+        [self setupDecoder];
     }
     return self;
 }
@@ -42,41 +40,30 @@
 }
 
 
-- (BOOL)setupDecoder{
-    avcodec_register_all();
-
-    av_register_all();
-    
-    _pCodec = avcodec_find_decoder_by_name("h264");
-    if (_pCodec == NULL) {
-        return NO;
-        //                return;
-    }
-    
-    _pCodecCtx = avcodec_alloc_context3(_pCodec);
-    
-    if(_pCodec->capabilities&CODEC_CAP_TRUNCATED)
-        _pCodecCtx->flags|= CODEC_FLAG_TRUNCATED; // we do not send complete frames
-    if (_pCodecCtx == NULL) {
-        return NO;
-    }
-    
-    if(avcodec_open2(_pCodecCtx, _pCodec, NULL)<0){
-        return NO;
-    }
-    _pCodecCtx->pix_fmt = AV_PIX_FMT_YUV420P;
-    return YES;
-}
-
-
-
-- (void)destroy {
-    if (_pCodecCtx) {
-        avcodec_close(_pCodecCtx);
-        av_free(_pCodecCtx);
-        _pCodecCtx = NULL;
-    }
-    _pCodec = NULL;
+- (void)setupDecoder{
+    dispatch_async(self.decoderQueue, ^{
+        avcodec_register_all();
+        
+        av_register_all();
+        
+        self->_pCodec = avcodec_find_decoder_by_name("h264");
+        if (self->_pCodec == NULL) {
+            return ;
+        }
+        
+        self->_pCodecCtx = avcodec_alloc_context3(self->_pCodec);
+        
+        if(self->_pCodec->capabilities&CODEC_CAP_TRUNCATED)
+            self->_pCodecCtx->flags|= CODEC_FLAG_TRUNCATED; // we do not send complete frames
+        if (self->_pCodecCtx == NULL) {
+            return;
+        }
+        
+        if(avcodec_open2(self->_pCodecCtx, self->_pCodec, NULL)<0){
+            return;
+        }
+        self->_pCodecCtx->pix_fmt = AV_PIX_FMT_YUV420P;
+    });
 }
 
 NSData * copyFrameData(UInt8 *src, int linesize, int width, int height) {
@@ -93,82 +80,97 @@ NSData * copyFrameData(UInt8 *src, int linesize, int width, int height) {
 
 
 
-- (void)decodeFrameToYUV:(MediaFrame *)frame {
+- (void)decodeFrameToYUV:(NSData *)frame {
     dispatch_async(self.decoderQueue, ^{
         
-        AVFrame *_pFrametest = av_frame_alloc();
-        AVPacket pkt, *packettest = &pkt;
-        int size = [[frame buffer] length];
-        av_new_packet(packettest,size);
+        AVFrame *pFrame = av_frame_alloc();
         
-        if (packettest==NULL) {
-            av_free(_pFrametest);
+        AVPacket *packet = av_packet_alloc();
+        int size = (int)[frame length];
+        av_new_packet(packet,size);
+        
+        if (packet==NULL) {
+            av_free(pFrame);
             return;
         }
-        memcpy(packettest->data,(uint8_t *)[[frame buffer] bytes], size);
-        if (_pCodecCtx==NULL) {
-            av_free_packet(packettest);
-            av_free(_pFrametest);
+        memcpy(packet->data,(uint8_t *)[frame bytes], size);
+        if (self->_pCodecCtx==NULL) {
+            av_packet_unref(packet);
+            av_packet_free(&packet);
+            av_free(pFrame);
             return;
         }
-        if (_pFrametest==NULL) {
-            av_free_packet(packettest);
-            av_free(_pFrametest);
+        if (pFrame==NULL) {
+            av_packet_unref(packet);
+            av_packet_free(&packet);
+            av_free(pFrame);
             return;
         }
-        int gotten = 0;
-        //加上全局锁
         int dec = 0;
         
-        if (_pCodecCtx)
-            dec = avcodec_decode_video2(_pCodecCtx, _pFrametest, &gotten, packettest);
-        else{
-            av_free_packet(packettest);
-            av_free(_pFrametest);
+        if (self->_pCodecCtx){
+            dec = avcodec_send_packet(self->_pCodecCtx, packet);
+            if (dec != 0) {
+                NSLog(@"send packet failed!");
+                av_packet_unref(packet);
+                av_packet_free(&packet);
+                av_free(pFrame);
+                return;
+            }
+            dec = avcodec_receive_frame(self->_pCodecCtx, pFrame);
+            if (dec != 0) {
+                NSLog(@"avcodec_receive_frame failed!");
+                av_packet_unref(packet);
+                av_packet_free(&packet);
+                av_free(pFrame);
+                return;
+            }
+        }else{
+            av_packet_unref(packet);
+            av_packet_free(&packet);
+            av_free(pFrame);
             return;
         }
         
-        av_free_packet(packettest);
-        packettest = NULL;
+        av_packet_unref(packet);
+        av_packet_free(&packet);
+        packet = NULL;
         
-        if (gotten && dec > 0)
-        {
-            
-            if (_pFrametest->data[1]==NULL) {
-                av_free(_pFrametest);
-                _pFrametest = NULL;
-                return;
-            }
-            if (_pFrametest->data[2]==NULL) {
-                av_free(_pFrametest);
-                _pFrametest = NULL;
-                return;
-            }
-            
-            if (self.lastFrame != NULL) {
-                av_frame_free(&_lastFrame);
-                self.lastFrame = av_frame_clone(_pFrametest);
-                self.lastFrame->width = _pFrametest->width;
-                self.lastFrame->height = _pFrametest->height;
-            }else {
-                self.lastFrame = av_frame_clone(_pFrametest);
-                self.lastFrame->width = _pFrametest->width;
-                self.lastFrame->height = _pFrametest->height;
-            }
-            
-            NSData *dataY = copyFrameData(_pFrametest->data[0], _pFrametest->linesize[0], _pCodecCtx->width, _pCodecCtx->height);
-            NSData *dataU = copyFrameData(_pFrametest->data[1], _pFrametest->linesize[1], _pCodecCtx->width / 2, _pCodecCtx->height / 2);
-            NSData *dataV = copyFrameData(_pFrametest->data[2], _pFrametest->linesize[2],_pCodecCtx->width / 2, _pCodecCtx->height / 2);
-            av_frame_free(&_pFrametest);
-            if (self.delegate && [self.delegate respondsToSelector:@selector(decoder:didDecodeFrame:ydata:udata:vdata:)]) {
-                [self.delegate decoder:self didDecodeFrame:frame ydata:dataY udata:dataU vdata:dataV];
-            }
-        }else{
-            av_free(_pFrametest);
-            _pFrametest = NULL;
+        
+        if (pFrame->data[1]==NULL) {
+            av_free(pFrame);
+            pFrame = NULL;
+            return;
+        }
+        if (pFrame->data[2]==NULL) {
+            av_free(pFrame);
+            pFrame = NULL;
+            return;
+        }
+        
+        NSData *dataY = copyFrameData(pFrame->data[0], pFrame->linesize[0], self->_pCodecCtx->width, self->_pCodecCtx->height);
+        NSData *dataU = copyFrameData(pFrame->data[1], pFrame->linesize[1], self->_pCodecCtx->width / 2, self->_pCodecCtx->height / 2);
+        NSData *dataV = copyFrameData(pFrame->data[2], pFrame->linesize[2],self->_pCodecCtx->width / 2, self->_pCodecCtx->height / 2);
+        av_frame_free(&pFrame);
+        if (self.delegate && [self.delegate respondsToSelector:@selector(decoder:ydata:udata:vdata:)]) {
+            [self.delegate decoder:self ydata:dataY udata:dataU vdata:dataV];
         }
     });
     
+}
+
+-(void)endH264Data {
+    dispatch_async(self.decoderQueue, ^{
+        if (self->_pCodecCtx) {
+            avcodec_close(self->_pCodecCtx);
+            av_free(self->_pCodecCtx);
+            self->_pCodecCtx = NULL;
+        }
+        self->_pCodec = NULL;
+        if (self.delegate && [self.delegate respondsToSelector:@selector(endDecoder)]) {
+            [self.delegate endDecoder];
+        }
+    });
 }
 
 @end
